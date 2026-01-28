@@ -8,7 +8,7 @@ import argparse
 from sqlmodel import Session, select
 from loguru import logger as l
 
-from plugin import PluginBase, PluginMetadata
+from plugin import PluginBase, PluginMetadata, plugin_manager
 from main import engine, manager # 导入数据库引擎和 websocket manager
 import models as m
 
@@ -89,6 +89,8 @@ class Plugin(PluginBase):
             devices = sess.exec(select(m.DeviceData).where(m.DeviceData.using == True)).all()
             
             modified = False
+            timed_out_devices = []
+
             for dev in devices:
                 if now - dev.last_updated > timeout_seconds:
                     l.info(f"Device {dev.name} ({dev.id}) timed out. Marking offline.")
@@ -96,6 +98,12 @@ class Plugin(PluginBase):
                     dev.status = "Offline (Auto)"
                     sess.add(dev)
                     modified = True
+                    timed_out_devices.append(dev.id)
+
+                    await manager.evt_broadcast('device_updated', {
+                        'id': dev.id, 
+                        'updated_fields': {'using': False, 'status': "Offline (Auto)"}
+                    })
 
                     await manager.evt_broadcast('device_updated', {
                         'id': dev.id, 
@@ -104,3 +112,5 @@ class Plugin(PluginBase):
 
             if modified:
                 sess.commit()
+                if timed_out_devices:
+                    await plugin_manager.trigger_hook('device_activity', device_ids=timed_out_devices, source='auto_timeout')
